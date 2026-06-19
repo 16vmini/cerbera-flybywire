@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>flybywire — Cerbera throttle tuner</title>
+<style>
+  :root {
+    --accent:#c0392b; --accent-2:#f59e0b; --ok:#16a34a; --warn:#eab308;
+    --bg:#0e1014; --card:#1a1d22; --card-hi:#22262d; --fg:#f3f4f6;
+    --muted:#9ca3af; --line:#2a2e36;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--fg); line-height:1.45; }
+  header{ background:var(--accent); color:#fff; padding:.85rem 1.2rem; display:flex; align-items:center; gap:.8rem; }
+  header h1{ margin:0; font-size:1.05rem; font-weight:700; }
+  header .badge{ background:rgba(0,0,0,.25); padding:.1rem .45rem; border-radius:99px; font-size:.7rem; letter-spacing:.05em; }
+  header .right{ margin-left:auto; display:flex; align-items:center; gap:.6rem; font-size:.85rem; }
+  main{ max-width:1200px; margin:1rem auto; padding:0 1rem; display:grid; gap:1rem; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px){ main{ grid-template-columns: 1fr; } }
+  .full{ grid-column: 1 / -1; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem 1.2rem; }
+  .card h2{ font-size:.86rem; margin:0 0 .8rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; font-weight:700; }
+  button{ background:var(--accent); color:#fff; border:none; border-radius:8px; padding:.5rem .95rem; font:inherit; font-weight:600; cursor:pointer; font-size:.85rem; }
+  button.secondary{ background:transparent; border:1px solid var(--accent); color:var(--accent); }
+  button.ghost{ background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button.ok{ background:var(--ok); }
+  button.danger{ background:#7a1f17; }
+  button:disabled{ opacity:.45; cursor:default; }
+  button.small{ padding:.25rem .55rem; font-size:.74rem; }
+  .row{ display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem; flex-wrap:wrap; }
+  label{ color:var(--muted); font-size:.8rem; min-width:140px; }
+  input[type=number], input[type=text]{ background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:.32rem .5rem; font:inherit; font-size:.85rem; width:6.5rem; font-variant-numeric: tabular-nums; }
+
+  /* Gauges */
+  .gauges{ display:grid; grid-template-columns: repeat(4, 1fr); gap:.6rem; }
+  @media (max-width:680px){ .gauges{ grid-template-columns: repeat(2, 1fr); } }
+  .gauge{ background:var(--card-hi); border:1px solid var(--line); border-radius:10px; padding:.65rem .5rem .4rem; text-align:center; }
+  .gauge svg{ display:block; margin:0 auto; }
+  .gauge .lbl{ font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .gauge .v{ font-size:1.05rem; font-weight:700; font-variant-numeric: tabular-nums; margin-top:.15rem; }
+  .gauge .v small{ font-size:.65rem; color:var(--muted); font-weight:400; margin-left:.25rem; }
+  .gauge .capture{ display:flex; gap:.25rem; justify-content:center; margin-top:.35rem; }
+
+  /* Bars */
+  .bar{ background:var(--bg); border:1px solid var(--line); border-radius:6px; height:18px; position:relative; overflow:hidden; }
+  .bar > div{ height:100%; transition: width .08s linear; }
+  .bar > span{ position:absolute; left:8px; top:0; line-height:18px; font-size:.74rem; mix-blend-mode:difference; color:#fff; font-variant-numeric: tabular-nums; }
+
+  /* Status pill */
+  .pill{ display:inline-block; padding:.12rem .6rem; border-radius:99px; font-size:.7rem; font-weight:800; letter-spacing:.03em; }
+  .pill.armed{ background:var(--ok); color:#fff; } .pill.disarmed{ background:#444; color:#fff; }
+  .pill.fault{ background:var(--accent); color:#fff; }
+  .pill.sim{ background:var(--warn); color:#000; }
+  .dot{ width:10px; height:10px; border-radius:50%; display:inline-block; vertical-align:middle; margin-right:.35rem; }
+  .dot.ok{ background:var(--ok); } .dot.warn{ background:var(--warn); } .dot.bad{ background:var(--accent); } .dot.idle{ background:#555; }
+
+  pre{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.55rem .75rem; font-size:.74rem; max-height:220px; overflow:auto; margin:0; font-family:ui-monospace,Consolas,Menlo,monospace; }
+
+  /* Map editor */
+  #mapSvg{ width:100%; height:240px; background:var(--bg); border:1px solid var(--line); border-radius:8px; touch-action:none; }
+  #mapSvg .grid{ stroke:var(--line); stroke-width:1; }
+  #mapSvg .axis{ fill:var(--muted); font-size:9px; font-family:ui-monospace,monospace; }
+  #mapSvg .curve{ stroke:var(--accent); stroke-width:2.5; fill:none; }
+  #mapSvg .pt{ fill:var(--accent); stroke:#fff; stroke-width:1.5; cursor:grab; }
+  #mapSvg .pt.dragging{ cursor:grabbing; fill:var(--accent-2); }
+  #mapSvg .pedal{ fill:var(--accent-2); stroke:#000; stroke-width:1; }
+  #mapSvg .pedalLine{ stroke:var(--accent-2); stroke-width:1; stroke-dasharray:3,3; opacity:.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <span style="font-size:1.25rem">🔧</span>
+  <h1>flybywire — Cerbera throttle tuner</h1>
+  <span class="badge">v0.2</span>
+  <span class="right">
+    <span id="connStatus"><span class="dot idle"></span>Not connected</span>
+    <span id="armStatus"></span>
+  </span>
+</header>
+
+<main>
+
+  <!-- Connection bar -->
+  <section class="card full">
+    <div class="row" style="margin-bottom:0">
+      <button id="connectBtn">Connect to Pico</button>
+      <button id="disconnectBtn" class="ghost" disabled>Disconnect</button>
+      <button id="simulateBtn" class="ghost">Simulate (no Pico)</button>
+      <span style="margin-left:1rem; color:var(--muted); font-size:.82rem">Chrome or Edge required (WebSerial).</span>
+      <span style="margin-left:auto"></span>
+      <button id="armBtn" class="ok" disabled>Arm</button>
+      <button id="disarmBtn" class="ghost" disabled>Disarm</button>
+      <button id="clearFaultBtn" class="danger" disabled>Clear fault</button>
+      <button id="saveBtn" class="secondary" disabled>Save to flash</button>
+    </div>
+  </section>
+
+  <!-- Live sensor gauges -->
+  <section class="card full">
+    <h2>Live sensors (raw ADC, 0–4095)</h2>
+    <div class="gauges">
+      <!-- Each gauge renders its own SVG via JS -->
+      <div class="gauge" data-key="s1">
+        <div class="lbl">Pedal S1</div>
+        <svg viewBox="0 0 100 64" width="120" height="76"></svg>
+        <div class="v"><span class="raw">—</span><small>/4095</small></div>
+        <div class="capture">
+          <button class="small ghost" data-cap="pedal_s1_min">Idle</button>
+          <button class="small ghost" data-cap="pedal_s1_max">WOT</button>
+        </div>
+      </div>
+      <div class="gauge" data-key="s2">
+        <div class="lbl">Pedal S2</div>
+        <svg viewBox="0 0 100 64" width="120" height="76"></svg>
+        <div class="v"><span class="raw">—</span><small>/4095</small></div>
+        <div class="capture">
+          <button class="small ghost" data-cap="pedal_s2_min">Idle</button>
+          <button class="small ghost" data-cap="pedal_s2_max">WOT</button>
+        </div>
+      </div>
+      <div class="gauge" data-key="e1">
+        <div class="lbl">ETB pot 1</div>
+        <svg viewBox="0 0 100 64" width="120" height="76"></svg>
+        <div class="v"><span class="raw">—</span><small>/4095</small></div>
+        <div class="capture">
+          <button class="small ghost" data-cap="etb_pot1_closed">Closed</button>
+          <button class="small ghost" data-cap="etb_pot1_open">Open</button>
+        </div>
+      </div>
+      <div class="gauge" data-key="e2">
+        <div class="lbl">ETB pot 2</div>
+        <svg viewBox="0 0 100 64" width="120" height="76"></svg>
+        <div class="v"><span class="raw">—</span><small>/4095</small></div>
+        <div class="capture">
+          <button class="small ghost" data-cap="etb_pot2_closed">Closed</button>
+          <button class="small ghost" data-cap="etb_pot2_open">Open</button>
+        </div>
+      </div>
+    </div>
+    <p style="color:var(--muted); font-size:.78rem; margin:.7rem 0 0">
+      Hold the pedal / throttle in position, click the matching button (Idle / WOT / Closed / Open). The raw ADC value snaps into the calibration field below.
+      Save to flash when you're happy.
+    </p>
+  </section>
+
+  <!-- Position bars + state -->
+  <section class="card">
+    <h2>Calibrated position</h2>
+    <div class="row"><label>Pedal</label><div class="bar" style="flex:1"><div id="bar_pedal" style="width:0%; background:var(--accent)"></div><span id="lbl_pedal">0 %</span></div></div>
+    <div class="row"><label>Target (after map)</label><div class="bar" style="flex:1"><div id="bar_target" style="width:0%; background:var(--accent-2)"></div><span id="lbl_target">0 %</span></div></div>
+    <div class="row"><label>ETB position</label><div class="bar" style="flex:1"><div id="bar_etb" style="width:0%; background:var(--ok)"></div><span id="lbl_etb">0 %</span></div></div>
+    <div class="row"><label>Motor current</label><span id="lbl_current" style="font-variant-numeric:tabular-nums">— A</span></div>
+    <div class="row"><label>Fault</label><span id="lbl_fault" style="color:var(--muted)">—</span></div>
+  </section>
+
+  <!-- Calibration values -->
+  <section class="card">
+    <h2>Calibration (raw ADC)</h2>
+    <div class="row"><label>Pedal S1 min / max</label><input type="number" id="cal_pedal_s1_min" /> <input type="number" id="cal_pedal_s1_max" /></div>
+    <div class="row"><label>Pedal S2 min / max</label><input type="number" id="cal_pedal_s2_min" /> <input type="number" id="cal_pedal_s2_max" /></div>
+    <div class="row"><label>ETB pot 1 closed / open</label><input type="number" id="cal_etb_pot1_closed" /> <input type="number" id="cal_etb_pot1_open" /></div>
+    <div class="row"><label>ETB pot 2 closed / open</label><input type="number" id="cal_etb_pot2_closed" /> <input type="number" id="cal_etb_pot2_open" /></div>
+    <div class="row" style="margin-top:.4rem"><button id="applyCal">Apply to Pico</button><button id="reloadCal" class="ghost">Reload from Pico</button></div>
+  </section>
+
+  <!-- Throttle map -->
+  <section class="card full">
+    <h2>Throttle map — pedal % → throttle %</h2>
+    <p style="color:var(--muted); font-size:.78rem; margin:0 0 .55rem">
+      5 break-points, linear between. Drag points up/down/left/right. The orange dot shows where the pedal currently is on the curve.
+      Default = softer first 20 % (calmer in traffic), linear beyond. Apply to send to Pico, Save to flash to persist.
+    </p>
+    <svg id="mapSvg" viewBox="0 0 400 240" preserveAspectRatio="none"></svg>
+    <div class="row" style="margin-top:.5rem">
+      <button id="applyMap">Apply to Pico</button>
+      <button id="reloadMap" class="ghost">Reload from Pico</button>
+      <button id="mapDefault" class="ghost">Reset to default</button>
+      <button id="mapLinear" class="ghost">Set linear</button>
+      <button id="mapSoft" class="ghost">Set soft start</button>
+    </div>
+  </section>
+
+  <!-- PID + Test modes -->
+  <section class="card">
+    <h2>PID gains</h2>
+    <div class="row"><label>Kp</label><input type="number" step="0.01" id="kp" /></div>
+    <div class="row"><label>Ki</label><input type="number" step="0.01" id="ki" /></div>
+    <div class="row"><label>Kd</label><input type="number" step="0.01" id="kd" /></div>
+    <div class="row"><button id="applyPid">Apply to Pico</button><button id="reloadPid" class="ghost">Reload</button></div>
+    <p style="color:var(--muted); font-size:.76rem; margin:.4rem 0 0">P-only first; bring Kp up to crisp tracking without oscillation, then small Kd to damp, then Ki to kill steady-state error.</p>
+  </section>
+
+  <section class="card">
+    <h2>Test modes</h2>
+    <div class="row"><button id="testPedal" class="ghost">Stream raw ADCs (5 s)</button></div>
+    <div class="row"><button id="testSweep" class="danger">Servo sweep — engine OFF only</button></div>
+    <p style="color:var(--muted); font-size:.76rem; margin:.4rem 0 0">Sweep drives the ETB open/closed end-to-end. Confirm the linkage moves correctly before you ever fit a running engine.</p>
+  </section>
+
+  <!-- Log -->
+  <section class="card full">
+    <h2>Serial log</h2>
+    <pre id="log"></pre>
+  </section>
+
+</main>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const qs = (sel, root=document) => root.querySelector(sel);
+const qsa = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+
+// --- State ---
+let port = null, reader = null, writer = null, readBuf = '';
+let simulate = false;
+let simTimer = null;
+let lastTel = { pedal: 0, pedal2: 0, target: 0, etb: 0, etb2: 0, s1: 0, s2: 0, e1: 0, e2: 0, i: 0, armed: 0, fault: 'ok' };
+let mapPts = [[0, 0], [0.20, 0.08], [0.50, 0.40], [0.80, 0.78], [1.00, 1.00]];
+let pendingGets = new Map();   // key → callback for GET responses
+
+// --- Logging ---
+function log(line) {
+  const el = $('log');
+  const t = new Date().toLocaleTimeString();
+  el.textContent += `[${t}] ${line}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// --- Connection ---
+async function connect() {
+  if (!('serial' in navigator)) { alert('WebSerial not supported. Use Chrome or Edge.'); return; }
+  try {
+    port = await navigator.serial.requestPort({});
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    reader = port.readable.getReader();
+    simulate = false;
+    setConnected(true, 'Pico');
+    log('connected');
+    readLoop();
+    await sleep(150);
+    await send('STREAM ON');
+    await reloadAllFromPico();
+  } catch (e) { log('error: ' + e.message); }
+}
+
+async function disconnect() {
+  try { if (writer) await send('STREAM OFF'); } catch(e){}
+  if (reader) { try { reader.cancel(); } catch(e){} try { reader.releaseLock(); } catch(e){} }
+  if (writer) { try { writer.releaseLock(); } catch(e){} }
+  if (port) { try { await port.close(); } catch(e){} }
+  port = reader = writer = null;
+  setConnected(false);
+  log('disconnected');
+}
+
+function setConnected(c, kind = null) {
+  for (const id of ['disconnectBtn','armBtn','disarmBtn','clearFaultBtn','saveBtn','applyCal','reloadCal','applyMap','reloadMap','applyPid','reloadPid','testPedal','testSweep']) $(id).disabled = !c;
+  $('connectBtn').disabled = c;
+  $('simulateBtn').disabled = c;
+  if (c) {
+    if (simulate) {
+      $('connStatus').innerHTML = '<span class="pill sim">SIMULATING</span>';
+    } else {
+      $('connStatus').innerHTML = '<span class="dot ok"></span>Connected to ' + (kind || 'Pico');
+    }
+  } else {
+    $('connStatus').innerHTML = '<span class="dot idle"></span>Not connected';
+    $('armStatus').innerHTML = '';
+  }
+}
+
+// --- Send / receive ---
+async function send(line) {
+  if (simulate) { simRespond(line); return; }
+  if (!writer) return;
+  await writer.write(new TextEncoder().encode(line + '\n'));
+  log('> ' + line);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function readLoop() {
+  const dec = new TextDecoder();
+  try {
+    while (port) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      readBuf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = readBuf.indexOf('\n')) >= 0) {
+        const line = readBuf.slice(0, i).replace(/\r$/, '');
+        readBuf = readBuf.slice(i + 1);
+        handleLine(line);
+      }
+    }
+  } catch (e) { log('read error: ' + e.message); }
+}
+
+function handleLine(line) {
+  if (line.startsWith('T ')) {
+    parseTelemetry(line.slice(2));
+    return;
+  }
+  log('< ' + line);
+  // GET response: "<param>=<value>"
+  const m = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.+)$/);
+  if (m && pendingGets.has(m[1])) {
+    const cb = pendingGets.get(m[1]); pendingGets.delete(m[1]);
+    try { cb(m[2]); } catch(e){}
+  }
+}
+
+function parseTelemetry(s) {
+  const t = {};
+  for (const p of s.split(/\s+/)) {
+    const [k, v] = p.split('=');
+    if (!k) continue;
+    t[k] = v;
+  }
+  lastTel = Object.assign({}, lastTel, t);
+  updateUI();
+}
+
+// --- UI updates ---
+function pct(v) { v = parseFloat(v); if (!isFinite(v)) return '— %'; return Math.round(v*100) + ' %'; }
+function pctw(v) { v = parseFloat(v); return Math.max(0, Math.min(100, v*100)) + '%'; }
+
+function updateUI() {
+  // Gauges
+  setGauge('s1', lastTel.s1);
+  setGauge('s2', lastTel.s2);
+  setGauge('e1', lastTel.e1);
+  setGauge('e2', lastTel.e2);
+
+  // Position bars
+  $('bar_pedal').style.width = pctw(lastTel.pedal);
+  $('lbl_pedal').textContent = pct(lastTel.pedal);
+  $('bar_target').style.width = pctw(lastTel.target);
+  $('lbl_target').textContent = pct(lastTel.target);
+  $('bar_etb').style.width = pctw(lastTel.etb);
+  $('lbl_etb').textContent = pct(lastTel.etb);
+  $('lbl_current').textContent = parseFloat(lastTel.i || 0).toFixed(2) + ' A';
+
+  if (lastTel.fault && lastTel.fault !== 'ok') {
+    $('lbl_fault').textContent = lastTel.fault;
+    $('lbl_fault').style.color = 'var(--accent)';
+  } else {
+    $('lbl_fault').textContent = '—'; $('lbl_fault').style.color = 'var(--muted)';
+  }
+
+  const armed = lastTel.armed === '1' || lastTel.armed === 1;
+  const faulted = lastTel.fault && lastTel.fault !== 'ok';
+  if (simulate) {
+    $('armStatus').innerHTML = '<span class="pill sim">SIM</span>';
+  } else if (faulted) {
+    $('armStatus').innerHTML = '<span class="pill fault">FAULT</span>';
+  } else if (armed) {
+    $('armStatus').innerHTML = '<span class="pill armed">ARMED</span>';
+  } else {
+    $('armStatus').innerHTML = '<span class="pill disarmed">disarmed</span>';
+  }
+
+  // Map: show pedal position dot
+  drawMap();
+}
+
+// --- Gauges (SVG arc with needle) ---
+function setupGauges() {
+  for (const g of qsa('.gauge')) {
+    const svg = qs('svg', g);
+    svg.innerHTML = gaugeArcMarkup();
+  }
+}
+function gaugeArcMarkup() {
+  // Half-circle 100x64, radius ~40, centred at (50, 50).
+  // Background arc + needle layer + tick marks.
+  const ticks = [];
+  for (let i = 0; i <= 10; i++) {
+    const ang = Math.PI - i * (Math.PI / 10); // 180° to 0° sweep
+    const r1 = 39, r2 = (i % 5 === 0) ? 34 : 36;
+    const x1 = 50 + r1 * Math.cos(ang), y1 = 50 - r1 * Math.sin(ang);
+    const x2 = 50 + r2 * Math.cos(ang), y2 = 50 - r2 * Math.sin(ang);
+    ticks.push(`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#555" stroke-width="${i%5===0?1.3:0.7}"/>`);
+  }
+  return `
+    <path d="M 10 50 A 40 40 0 0 1 90 50" stroke="#2a2e36" stroke-width="6" fill="none"/>
+    <path d="M 10 50 A 40 40 0 0 1 90 50" stroke="url(#grad)" stroke-width="6" fill="none" stroke-dasharray="0 200" class="bg-fill"/>
+    <defs><linearGradient id="grad" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#16a34a"/><stop offset="55%" stop-color="#eab308"/><stop offset="100%" stop-color="#c0392b"/></linearGradient></defs>
+    ${ticks.join('')}
+    <line class="needle" x1="50" y1="50" x2="50" y2="14" stroke="#fff" stroke-width="2.2" stroke-linecap="round" transform="rotate(-90 50 50)"/>
+    <circle cx="50" cy="50" r="3" fill="#fff"/>
+  `;
+}
+function setGauge(key, raw) {
+  const v = parseInt(raw); if (!isFinite(v)) return;
+  const g = qs(`.gauge[data-key="${key}"]`);
+  if (!g) return;
+  const norm = Math.max(0, Math.min(1, v / 4095));
+  // Needle: -90° (leftmost) → +90° (rightmost)
+  const angle = -90 + norm * 180;
+  const needle = qs('.needle', g);
+  if (needle) needle.setAttribute('transform', `rotate(${angle.toFixed(1)} 50 50)`);
+  // Arc fill
+  const arcLen = 126; // approx half-circumference at r=40
+  const fill = qs('.bg-fill', g);
+  if (fill) fill.setAttribute('stroke-dasharray', `${(norm*arcLen).toFixed(1)} 200`);
+  qs('.raw', g).textContent = v;
+}
+
+// --- Map editor ---
+const MAP_W = 400, MAP_H = 240;
+const MAP_PAD = { l: 28, r: 8, t: 14, b: 22 };
+function mx(x) { return MAP_PAD.l + x * (MAP_W - MAP_PAD.l - MAP_PAD.r); }
+function my(y) { return MAP_H - MAP_PAD.b - y * (MAP_H - MAP_PAD.t - MAP_PAD.b); }
+function unmx(px) { return Math.max(0, Math.min(1, (px - MAP_PAD.l) / (MAP_W - MAP_PAD.l - MAP_PAD.r))); }
+function unmy(py) { return Math.max(0, Math.min(1, (MAP_H - MAP_PAD.b - py) / (MAP_H - MAP_PAD.t - MAP_PAD.b))); }
+
+function drawMap() {
+  const svg = $('mapSvg');
+  let html = '';
+  // Grid
+  for (let i = 0; i <= 10; i++) {
+    const x = mx(i/10);
+    html += `<line class="grid" x1="${x}" y1="${MAP_PAD.t}" x2="${x}" y2="${MAP_H - MAP_PAD.b}"/>`;
+    const y = my(i/10);
+    html += `<line class="grid" x1="${MAP_PAD.l}" y1="${y}" x2="${MAP_W - MAP_PAD.r}" y2="${y}"/>`;
+  }
+  // Axis labels
+  html += `<text class="axis" x="${MAP_PAD.l}" y="${MAP_H - 6}">0% pedal</text>`;
+  html += `<text class="axis" x="${MAP_W - MAP_PAD.r}" y="${MAP_H - 6}" text-anchor="end">100% pedal</text>`;
+  html += `<text class="axis" x="4" y="${MAP_H - MAP_PAD.b}">0%</text>`;
+  html += `<text class="axis" x="4" y="${MAP_PAD.t + 8}">100% throttle</text>`;
+  // Curve
+  const path = mapPts.map((p, i) => (i === 0 ? 'M' : 'L') + ` ${mx(p[0])} ${my(p[1])}`).join(' ');
+  html += `<path class="curve" d="${path}"/>`;
+  // Points
+  for (let i = 0; i < mapPts.length; i++) {
+    const [x, y] = mapPts[i];
+    html += `<circle class="pt" data-i="${i}" cx="${mx(x)}" cy="${my(y)}" r="6"/>`;
+  }
+  // Live pedal indicator
+  const pedal = parseFloat(lastTel.pedal);
+  if (isFinite(pedal)) {
+    const yOnCurve = mapLookup(pedal);
+    html += `<line class="pedalLine" x1="${mx(pedal)}" y1="${MAP_PAD.t}" x2="${mx(pedal)}" y2="${my(yOnCurve)}"/>`;
+    html += `<line class="pedalLine" x1="${MAP_PAD.l}" y1="${my(yOnCurve)}" x2="${mx(pedal)}" y2="${my(yOnCurve)}"/>`;
+    html += `<circle class="pedal" cx="${mx(pedal)}" cy="${my(yOnCurve)}" r="5"/>`;
+  }
+  svg.innerHTML = html;
+  attachMapDrag(svg);
+}
+
+function mapLookup(pedal) {
+  for (let i = 1; i < mapPts.length; i++) {
+    if (pedal <= mapPts[i][0]) {
+      const t = (pedal - mapPts[i-1][0]) / (mapPts[i][0] - mapPts[i-1][0]);
+      return mapPts[i-1][1] + t * (mapPts[i][1] - mapPts[i-1][1]);
+    }
+  }
+  return mapPts[mapPts.length - 1][1];
+}
+
+function attachMapDrag(svg) {
+  for (const pt of qsa('.pt', svg)) {
+    pt.addEventListener('pointerdown', startDrag);
+  }
+  function startDrag(e) {
+    e.preventDefault();
+    const idx = parseInt(e.target.dataset.i);
+    e.target.classList.add('dragging');
+    e.target.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const r = svg.getBoundingClientRect();
+      const px = ((ev.clientX - r.left) / r.width) * MAP_W;
+      const py = ((ev.clientY - r.top) / r.height) * MAP_H;
+      let nx = unmx(px), ny = unmy(py);
+      // Endpoints can't move horizontally; keep curve monotonic
+      if (idx === 0) { nx = 0; }
+      else if (idx === mapPts.length - 1) { nx = 1; }
+      else {
+        nx = Math.max(mapPts[idx-1][0] + 0.005, Math.min(mapPts[idx+1][0] - 0.005, nx));
+      }
+      mapPts[idx] = [nx, ny];
+      drawMap();
+    };
+    const up = (ev) => {
+      try { e.target.releasePointerCapture(e.pointerId); } catch(_){}
+      svg.removeEventListener('pointermove', move);
+      svg.removeEventListener('pointerup', up);
+      svg.removeEventListener('pointercancel', up);
+    };
+    svg.addEventListener('pointermove', move);
+    svg.addEventListener('pointerup', up);
+    svg.addEventListener('pointercancel', up);
+  }
+}
+
+// --- GET sweep helpers ---
+function getValue(key) {
+  return new Promise((resolve) => {
+    pendingGets.set(key, resolve);
+    send('GET ' + key);
+    setTimeout(() => { if (pendingGets.has(key)) { pendingGets.delete(key); resolve(null); } }, 800);
+  });
+}
+
+async function reloadAllFromPico() {
+  if (simulate) {
+    // Populate with current local defaults
+    $('cal_pedal_s1_min').value = 200; $('cal_pedal_s1_max').value = 3900;
+    $('cal_pedal_s2_min').value = 100; $('cal_pedal_s2_max').value = 1950;
+    $('cal_etb_pot1_closed').value = 250; $('cal_etb_pot1_open').value = 3800;
+    $('cal_etb_pot2_closed').value = 3800; $('cal_etb_pot2_open').value = 250;
+    $('kp').value = 1.5; $('ki').value = 0.2; $('kd').value = 0.05;
+    return;
+  }
+  for (const k of ['pedal_s1_min','pedal_s1_max','pedal_s2_min','pedal_s2_max','etb_pot1_closed','etb_pot1_open','etb_pot2_closed','etb_pot2_open']) {
+    const v = await getValue(k);
+    if (v != null) $('cal_' + k).value = v;
+  }
+  for (const k of ['kp','ki','kd']) {
+    const v = await getValue(k);
+    if (v != null) $(k).value = v;
+  }
+  for (let i = 0; i < 5; i++) {
+    const x = await getValue('map_x' + i);
+    const y = await getValue('map_y' + i);
+    if (x != null && y != null) mapPts[i] = [parseFloat(x), parseFloat(y)];
+  }
+  drawMap();
+}
+
+// --- Apply forms back to Pico ---
+async function applyCal() {
+  for (const k of ['pedal_s1_min','pedal_s1_max','pedal_s2_min','pedal_s2_max','etb_pot1_closed','etb_pot1_open','etb_pot2_closed','etb_pot2_open']) {
+    const v = $('cal_' + k).value;
+    if (v !== '') await send(`SET ${k} ${v}`);
+  }
+}
+async function applyMap() {
+  for (let i = 0; i < 5; i++) {
+    await send(`SET map_x${i} ${mapPts[i][0].toFixed(4)}`);
+    await send(`SET map_y${i} ${mapPts[i][1].toFixed(4)}`);
+  }
+}
+async function applyPid() {
+  await send('SET kp ' + $('kp').value);
+  await send('SET ki ' + $('ki').value);
+  await send('SET kd ' + $('kd').value);
+}
+
+// --- Capture buttons (snapshot raw ADC into calibration field) ---
+function attachCaptureButtons() {
+  for (const b of qsa('button[data-cap]')) {
+    b.addEventListener('click', () => {
+      const target = b.dataset.cap;
+      const keyMap = {
+        pedal_s1_min: 's1', pedal_s1_max: 's1',
+        pedal_s2_min: 's2', pedal_s2_max: 's2',
+        etb_pot1_closed: 'e1', etb_pot1_open: 'e1',
+        etb_pot2_closed: 'e2', etb_pot2_open: 'e2',
+      };
+      const raw = lastTel[keyMap[target]];
+      if (raw == null) { log('no telemetry yet — connect first'); return; }
+      $('cal_' + target).value = raw;
+      log(`captured ${target} = ${raw}`);
+    });
+  }
+}
+
+// --- Simulation (so the page is testable without a Pico) ---
+async function startSimulate() {
+  simulate = true;
+  setConnected(true, 'simulator');
+  log('simulate mode started — moving fake pedal');
+  let t = 0;
+  // Run a slow sine pedal sweep so all gauges/curves come alive
+  simTimer = setInterval(() => {
+    t += 0.04;
+    const pedal = 0.5 + 0.5 * Math.sin(t);
+    const target = mapLookup(pedal);
+    // ETB lags target slightly (fake PID)
+    const etb = lastTel.etb_sim || target;
+    const newEtb = etb + (target - etb) * 0.2;
+    lastTel.etb_sim = newEtb;
+    const s1Raw = Math.round(200 + pedal * 3700);
+    const s2Raw = Math.round(100 + pedal * 1850);
+    const e1Raw = Math.round(250 + newEtb * 3550);
+    const e2Raw = Math.round(3800 - newEtb * 3550);
+    parseTelemetry(
+      `pedal=${pedal.toFixed(3)} pedal2=${pedal.toFixed(3)} target=${target.toFixed(3)} etb=${newEtb.toFixed(3)} etb2=${(1-newEtb).toFixed(3)} s1=${s1Raw} s2=${s2Raw} e1=${e1Raw} e2=${e2Raw} i=${(1+Math.abs(target-newEtb)*5).toFixed(2)} armed=1 fault=ok`
+    );
+  }, 30);
+  await reloadAllFromPico();
+}
+function stopSimulate() {
+  if (simTimer) clearInterval(simTimer);
+  simTimer = null;
+  simulate = false;
+  setConnected(false);
+}
+function simRespond(line) {
+  // Pretend GET responses for the sim path so reloadAllFromPico populates fields
+  log('> ' + line);
+  if (line.startsWith('GET ')) {
+    const k = line.slice(4).trim();
+    const fakes = {
+      pedal_s1_min: 200, pedal_s1_max: 3900, pedal_s2_min: 100, pedal_s2_max: 1950,
+      etb_pot1_closed: 250, etb_pot1_open: 3800, etb_pot2_closed: 3800, etb_pot2_open: 250,
+      kp: 1.5, ki: 0.2, kd: 0.05,
+    };
+    for (let i = 0; i < 5; i++) { fakes['map_x' + i] = mapPts[i][0]; fakes['map_y' + i] = mapPts[i][1]; }
+    setTimeout(() => handleLine(k + '=' + (fakes[k] !== undefined ? fakes[k] : '0')), 5);
+  } else if (line === 'STREAM ON' || line === 'STREAM OFF') {
+    setTimeout(() => handleLine('OK'), 5);
+  }
+}
+
+// --- Map presets ---
+function presetLinear() { mapPts = [[0,0],[0.25,0.25],[0.5,0.5],[0.75,0.75],[1,1]]; drawMap(); }
+function presetSoft()   { mapPts = [[0,0],[0.2,0.06],[0.5,0.32],[0.8,0.72],[1,1]]; drawMap(); }
+function presetDefault(){ mapPts = [[0,0],[0.20,0.08],[0.50,0.40],[0.80,0.78],[1,1]]; drawMap(); }
+
+// --- Wire UI ---
+function wireUI() {
+  $('connectBtn').onclick = connect;
+  $('disconnectBtn').onclick = () => { if (simulate) { stopSimulate(); } else { disconnect(); } };
+  $('simulateBtn').onclick = startSimulate;
+  $('armBtn').onclick = () => send('ARM');
+  $('disarmBtn').onclick = () => send('DISARM');
+  $('clearFaultBtn').onclick = () => send('CLEARFAULT');
+  $('saveBtn').onclick = () => send('SAVE');
+
+  $('applyCal').onclick = applyCal;
+  $('reloadCal').onclick = reloadAllFromPico;
+
+  $('applyMap').onclick = applyMap;
+  $('reloadMap').onclick = reloadAllFromPico;
+  $('mapDefault').onclick = presetDefault;
+  $('mapLinear').onclick = presetLinear;
+  $('mapSoft').onclick = presetSoft;
+
+  $('applyPid').onclick = applyPid;
+  $('reloadPid').onclick = reloadAllFromPico;
+
+  $('testPedal').onclick = () => send('TEST pedal');
+  $('testSweep').onclick = () => {
+    if (confirm('Servo sweep will drive the ETB through full open/close cycles. Engine must NOT be running. Continue?')) send('TEST sweep');
+  };
+
+  attachCaptureButtons();
+}
+
+// --- Boot ---
+setupGauges();
+wireUI();
+drawMap();
+updateUI();
+</script>
+</body>
+</html>

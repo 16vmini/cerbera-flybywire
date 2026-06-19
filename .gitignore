@@ -1,0 +1,16 @@
+# PlatformIO build artifacts
+firmware/.pio/
+firmware/build.log
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local secrets / config (none yet, but reserved)
+.env
+.env.local
