@@ -28,8 +28,28 @@ namespace pin {
 // --- ADC reference ---
 constexpr float adc_vref       = 3.30f;  // Pico runs ADCs against 3.3 V
 constexpr uint16_t adc_resol   = 4095;   // 12-bit
-// Pedal sensors run on 5 V but signals are 0.2–4.0 V max so they fit the
-// Pico's 0–3.3 V ADC range with no divider. Confirm at bench rig.
+//
+// !!! IMPORTANT — the RP2040 ADC pin absolute-maximum voltage is ~Vdd + 0.3 V
+//   (i.e. ~3.6 V). EXCEEDING THIS CAN DAMAGE THE CHIP.
+//
+// A Bosch DBW pedal sensor on its FACTORY 5 V supply outputs 0.4–4.0 V,
+// which is OUT OF SPEC for a direct Pico ADC connection. Two safe ways to
+// wire it:
+//
+//   (a) Power the sensor from the Pico's own 3.3 V rail (ratiometric Hall
+//       sensors scale their output to the supply, so signals stay within
+//       0–3.3 V automatically). This is what the bench rig does — simple
+//       and self-protecting. Slightly less ADC resolution but plenty of
+//       counts in 12 bits to nail pedal % accurately.
+//
+//   (b) Keep the OEM 5 V supply, then put a voltage divider on EACH signal
+//       line before the Pico ADC pin. 10 k / 22 k pair gives a ratio of
+//       0.687 → 4 V external scales to 2.75 V at the ADC, well inside spec.
+//       Use this for the production install (5 V gives the LM393
+//       cross-check, if we ever wire one, better signal-to-noise margin).
+//
+// NEVER feed a sensor signal directly to a Pico ADC if that signal can
+// exceed 3.3 V — even briefly. Spotted by Mark on review, 2026-06-22.
 
 // --- Loop rates ---
 constexpr uint32_t control_loop_hz  = 200;

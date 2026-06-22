@@ -7,10 +7,16 @@ motor side is untouched.
 
 We power the sensors from the **Pico's 3V3(OUT) pin**, not from 5 V.
 Sensors are ratiometric, so they output 0 to (supply × travel-fraction).
-Running them off 3.3 V means their signals max out at 3.3 V — fits the
-Pico's ADC range perfectly, no dividers needed. The production install
-will use 5 V + dividers (so the LM393 cross-check has full signal swing).
-For now, simpler is better.
+Running them off 3.3 V means their signals max out at 3.3 V — within the
+Pico's ADC range, no dividers needed.
+
+⚠️ **Critical**: the RP2040 ADC pin absolute-maximum voltage is **~3.6 V
+(Vdd + 0.3 V)** — feeding a higher voltage can damage the chip. A pedal
+sensor on its FACTORY 5 V supply outputs **up to 4 V**, which is OUT OF
+SPEC for a direct Pico ADC connection. Either power from 3.3 V (what this
+bench rig does) OR use a 10 k / 22 k voltage divider on each signal line
+before the ADC (production install). NEVER connect a 5 V-powered Bosch
+sensor signal directly to a Pico ADC pin.
 
 ## Audi A4 B7 pedal — 6-way Bosch connector
 
