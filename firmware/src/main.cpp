@@ -482,6 +482,13 @@ static void handle_command(char* line) {
     if (strcasecmp(k, "etb_pot1_open")   == 0) { snprintf(buf, sizeof(buf), "etb_pot1_open=%u",   cfg.cal.etb_pot1_open); emit(buf); return; }
     if (strcasecmp(k, "etb_pot2_closed") == 0) { snprintf(buf, sizeof(buf), "etb_pot2_closed=%u", cfg.cal.etb_pot2_closed); emit(buf); return; }
     if (strcasecmp(k, "etb_pot2_open")   == 0) { snprintf(buf, sizeof(buf), "etb_pot2_open=%u",   cfg.cal.etb_pot2_open); emit(buf); return; }
+    if (strcasecmp(k, "pedal_idle_min") == 0)  { snprintf(buf, sizeof(buf), "pedal_idle_min=%.4f", cfg.safety.pedal_idle_min); emit(buf); return; }
+    if (strcasecmp(k, "pedal_idle_max") == 0)  { snprintf(buf, sizeof(buf), "pedal_idle_max=%.4f", cfg.safety.pedal_idle_max); emit(buf); return; }
+    if (strcasecmp(k, "etb_closed_tol") == 0)  { snprintf(buf, sizeof(buf), "etb_closed_tol=%.4f", cfg.safety.etb_closed_tol); emit(buf); return; }
+    if (strcasecmp(k, "pedal_xcheck_tol") == 0){ snprintf(buf, sizeof(buf), "pedal_xcheck_tol=%.4f", cfg.safety.pedal_xcheck_tol); emit(buf); return; }
+    if (strcasecmp(k, "stuck_min_duty") == 0)  { snprintf(buf, sizeof(buf), "stuck_min_duty=%.4f", cfg.safety.stuck_min_duty); emit(buf); return; }
+    if (strcasecmp(k, "stuck_min_movement") == 0){ snprintf(buf, sizeof(buf), "stuck_min_movement=%.4f", cfg.safety.stuck_min_movement); emit(buf); return; }
+    if (strcasecmp(k, "stuck_timeout_ms") == 0){ snprintf(buf, sizeof(buf), "stuck_timeout_ms=%u", cfg.safety.stuck_timeout_ms); emit(buf); return; }
     // Throttle map points (5 break-points, x = pedal %, y = throttle %)
     for (int i = 0; i < 5; i++) {
       char nx[12], ny[12]; snprintf(nx, sizeof(nx), "map_x%d", i); snprintf(ny, sizeof(ny), "map_y%d", i);
@@ -507,6 +514,15 @@ static void handle_command(char* line) {
     if (strcasecmp(k, "etb_pot1_open") == 0)   { cfg.cal.etb_pot1_open = iv;   emit("OK"); return; }
     if (strcasecmp(k, "etb_pot2_closed") == 0) { cfg.cal.etb_pot2_closed = iv; emit("OK"); return; }
     if (strcasecmp(k, "etb_pot2_open") == 0)   { cfg.cal.etb_pot2_open = iv;   emit("OK"); return; }
+    // Safety thresholds — tuneable at runtime so we don't have to reflash for
+    // every minor change to the idle window or the stuck-linkage detector.
+    if (strcasecmp(k, "pedal_idle_min") == 0)  { cfg.safety.pedal_idle_min = fv; emit("OK"); return; }
+    if (strcasecmp(k, "pedal_idle_max") == 0)  { cfg.safety.pedal_idle_max = fv; emit("OK"); return; }
+    if (strcasecmp(k, "etb_closed_tol") == 0)  { cfg.safety.etb_closed_tol = fv; emit("OK"); return; }
+    if (strcasecmp(k, "pedal_xcheck_tol") == 0){ cfg.safety.pedal_xcheck_tol = fv; emit("OK"); return; }
+    if (strcasecmp(k, "stuck_min_duty") == 0)  { cfg.safety.stuck_min_duty = fv; emit("OK"); return; }
+    if (strcasecmp(k, "stuck_min_movement") == 0){ cfg.safety.stuck_min_movement = fv; emit("OK"); return; }
+    if (strcasecmp(k, "stuck_timeout_ms") == 0){ cfg.safety.stuck_timeout_ms = iv; emit("OK"); return; }
     // Throttle map points
     for (int i = 0; i < 5; i++) {
       char nx[12], ny[12]; snprintf(nx, sizeof(nx), "map_x%d", i); snprintf(ny, sizeof(ny), "map_y%d", i);
