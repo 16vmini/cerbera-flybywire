@@ -148,5 +148,8 @@ struct Config {
   PidCfg pid;
   SafetyCfg safety;
   uint32_t magic = 0xFB1Cf00d;  // sentinel to detect uninitialised flash
-  uint16_t version = 1;
+  uint16_t version = 2;          // bump on schema/default changes — older
+                                 // saves get their safety section reset to
+                                 // current compile-time defaults at boot
+                                 // (see load_config() in main.cpp).
 };

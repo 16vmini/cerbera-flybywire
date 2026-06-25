@@ -317,6 +317,16 @@ static void load_config() {
   Config tmp;
   if (f.read((uint8_t*)&tmp, sizeof(tmp)) == sizeof(tmp) && tmp.magic == 0xFB1Cf00d) {
     cfg = tmp;
+    // Schema migration. If the saved config was written by an older firmware
+    // version, keep the user's calibration / map / PID gains but reset the
+    // safety section to current compile-time defaults. Catches the case where
+    // a firmware change updates a safety threshold but the user's saved
+    // config still has the old value, silently overriding the new default.
+    if (tmp.version < Config{}.version) {
+      Config defaults;
+      cfg.safety  = defaults.safety;
+      cfg.version = defaults.version;
+    }
   }
   f.close();
 }
