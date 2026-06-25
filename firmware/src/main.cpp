@@ -1,8 +1,21 @@
 // flybywire — Cerbera throttle controller firmware.
 // Single Pico, dual core: Core 0 runs the PID control loop, Core 1 runs the
-// safety state machine + USB tuning protocol. Hardware safety (LM393 wired
-// into Pololu G2 /SLP, return spring on linkage) is the real failsafe;
-// firmware is one of several layers, not the only one.
+// safety state machine + USB tuning protocol.
+//
+// Motor driver: IBT-4 H-bridge module. Dual-PWM protocol:
+//   IN1 PWM → drive open (forward)
+//   IN2 PWM → drive closed (reverse, helps PID settle past overshoot)
+//   BOTH LOW → coast → spring closes throttle. This is the safe default state.
+//
+// IBT-4 uses two EG3013S half-bridge gate driver chips (confirmed by Mark
+// 2026-06-22). EG3013S has BUILT-IN DEAD TIME / SHOOT-THROUGH PROTECTION
+// internally, so we don't need to add software dead time on direction
+// reversal — the gate driver will refuse to turn both MOSFETs of a
+// half-bridge on simultaneously.
+//
+// Hardware safety: return spring on the linkage is the master mechanical
+// failsafe (no current = throttle closed). Pico's GPIO defaults to LOW on
+// reset / brown-out so the IBT-4 inputs default to coast.
 //
 // Build with PlatformIO (Earle Philhower's arduino-pico core). See platformio.ini.
 
@@ -55,6 +68,9 @@ static float apply_map(float pedal) {
 }
 
 // ----- Safety -----
+//
+// Cut both IN1 and IN2 to zero on any latched fault. IBT-4 with both inputs
+// low = motor coast = spring closes throttle. This is the safe state.
 static void latch_fault(const char* why) {
   noInterrupts();
   if (!fault_latched) {
@@ -62,8 +78,8 @@ static void latch_fault(const char* why) {
     strncpy((char*)fault_reason, why, sizeof(fault_reason) - 1);
   }
   armed = false;
-  digitalWrite(pin::motor_slp, LOW);  // open-drain low = driver disabled
-  analogWrite(pin::motor_pwm, 0);
+  analogWrite(pin::motor_in1, 0);
+  analogWrite(pin::motor_in2, 0);
   interrupts();
 }
 
@@ -105,12 +121,10 @@ static bool safe_to_arm(const char** reason_out) {
     return false;
   }
 
-  // HARD: motor driver in fault state
-  if (digitalRead(pin::motor_flt) == LOW) {
-    latch_fault("motor driver /FAULT");
-    if (reason_out) *reason_out = "motor driver reports fault";
-    return false;
-  }
+  // IBT-4 has no /FAULT output — driver-internal fault detection isn't
+  // available. Mark accepted the trade-off vs the Pololu G2 because the
+  // 50 A current rating gives so much headroom that an over-temp/over-
+  // current trip is very unlikely at our 3-8 A throttle motor load.
 
   // SOFT: operator hasn't keyed from rest yet — don't latch, just wait
   float pedal = raw_to_unit(s1, cfg.cal.pedal_s1_min, cfg.cal.pedal_s1_max);
@@ -134,21 +148,29 @@ static bool safe_to_arm(const char** reason_out) {
 static float pid_i = 0.0f;
 static float pid_prev_err = 0.0f;
 
+// Stuck-linkage detector state. While we're commanding significant duty,
+// snapshot the ETB position; if it hasn't moved enough within the window,
+// latch a fault. Mark's safety review 2026-06-22.
+static bool stuck_window_active = false;
+static uint32_t stuck_window_start_ms = 0;
+static float stuck_window_start_etb = 0.0f;
+
 static void control_step(uint32_t now_us, uint32_t dt_us) {
   uint16_t s1 = analogRead(pin::pedal_s1);
   uint16_t s2 = analogRead(pin::pedal_s2);
   uint16_t etb = analogRead(pin::etb_pot1);
-  uint16_t etb2 = analogRead(pin::etb_pot2);
 
-  // Record raw values for the tuner to display & calibrate against.
-  tel.s1_raw = s1; tel.s2_raw = s2; tel.e1_raw = etb; tel.e2_raw = etb2;
+  // Record raw values for the tuner to display & calibrate against. ETB Pot 2
+  // (e2_raw) and motor current (motor_a) zeroed — neither is available with
+  // the current bench hardware (GP29 hardwired to VSYS, IBT-4 no current sense).
+  tel.s1_raw = s1; tel.s2_raw = s2; tel.e1_raw = etb; tel.e2_raw = 0;
   tel.pedal2_pct = raw_to_unit(s2, cfg.cal.pedal_s2_min, cfg.cal.pedal_s2_max);
-  tel.etb2_pct  = raw_to_unit(etb2, cfg.cal.etb_pot2_closed, cfg.cal.etb_pot2_open);
+  tel.etb2_pct  = 0.0f;
+  tel.motor_a   = 0.0f;
 
   if (!pedal_xcheck_ok(s1, s2)) {
     // Bench rig phase: don't latch fault on cross-check until calibration is
-    // in — otherwise nothing works until cal is done. Software-side guard
-    // (the LM393 will still enforce in hardware once present.)
+    // in — otherwise nothing works until cal is done. Software-side guard.
     if (armed) latch_fault("runtime: pedal cross-check");
   }
 
@@ -165,23 +187,53 @@ static void control_step(uint32_t now_us, uint32_t dt_us) {
   pid_prev_err = err;
 
   float u = cfg.pid.kp * err + pid_i + cfg.pid.kd * d;
-  // Convert signed control effort to PWM duty + DIR.
-  bool dir_open = (u >= 0);
+  // Signed control effort → IBT-4 dual-PWM:
+  //   u > 0 → PWM on IN1 (drive open), IN2 = 0
+  //   u < 0 → PWM on IN2 (drive closed), IN1 = 0
+  //   disarmed / fault → both 0 (coast → spring closes throttle)
   float duty = constrain(fabsf(u), 0.0f, cfg.pid.out_max);
+  int duty_byte = (int)(duty * 255);
 
   if (armed && !fault_latched) {
-    digitalWrite(pin::motor_dir, dir_open ? HIGH : LOW);
-    analogWrite(pin::motor_pwm, (int)(duty * 255));
-    digitalWrite(pin::motor_slp, HIGH);  // open-drain hi-Z = enabled (pull-up wins)
+    if (u >= 0) {
+      analogWrite(pin::motor_in1, duty_byte);
+      analogWrite(pin::motor_in2, 0);
+    } else {
+      analogWrite(pin::motor_in1, 0);
+      analogWrite(pin::motor_in2, duty_byte);
+    }
+
+    // Stuck-linkage check: if we're commanding significant effort, expect
+    // the ETB position to start changing within stuck_timeout_ms. If it
+    // doesn't, the linkage is stuck / motor dead / sensor frozen → fault.
+    uint32_t now_ms = millis();
+    if (duty > cfg.safety.stuck_min_duty) {
+      if (!stuck_window_active) {
+        stuck_window_active = true;
+        stuck_window_start_ms = now_ms;
+        stuck_window_start_etb = actual;
+      } else if (now_ms - stuck_window_start_ms >= cfg.safety.stuck_timeout_ms) {
+        float movement = fabsf(actual - stuck_window_start_etb);
+        if (movement < cfg.safety.stuck_min_movement) {
+          latch_fault("stuck linkage: no ETB movement under commanded load");
+        } else {
+          // Moving — reset the window so the next stall would re-trigger it
+          stuck_window_active = false;
+        }
+      }
+    } else {
+      // Below the trigger threshold — keep the window inactive
+      stuck_window_active = false;
+    }
   } else {
-    analogWrite(pin::motor_pwm, 0);
-    digitalWrite(pin::motor_slp, LOW);   // open-drain low = disabled
+    analogWrite(pin::motor_in1, 0);
+    analogWrite(pin::motor_in2, 0);
+    stuck_window_active = false;
   }
 
   tel.pedal_pct = pedal_unit;
   tel.target_pct = target;
   tel.etb_pct = actual;
-  tel.motor_a = analogRead(pin::motor_cs) * (adc_vref / adc_resol) / cfg.cal.motor_cs_v_per_a;
 }
 
 // ----- USB CDC protocol (Core 1) -----
@@ -264,28 +316,26 @@ void setup() {
   pinMode(pin::pedal_s1, INPUT);
   pinMode(pin::pedal_s2, INPUT);
   pinMode(pin::etb_pot1, INPUT);
-  pinMode(pin::motor_cs, INPUT);
   analogReadResolution(12);
 
   // Mark's design review — set throttle to ZERO before anything else, so the
   // window between power-on and the first control loop pass cannot ever drive
-  // the motor. Order matters: configure pins as inputs (high-impedance) by
-  // default, then explicitly drive outputs to "safe" before turning them into
-  // outputs.
-  digitalWrite(pin::motor_slp, LOW);   // pre-write before output mode
-  pinMode(pin::motor_slp, OUTPUT_OPENDRAIN);
-  digitalWrite(pin::motor_slp, LOW);   // driver disabled (open-drain = pull low)
-
-  analogWriteFreq(20000);
+  // the motor. Order matters: explicitly drive outputs to "safe" BEFORE
+  // turning them into outputs.
+  //
+  // PWM frequency 1 kHz on Mark's recommendation 2026-06-22 — ETB motor
+  // responds well at this rate (smooth current ramp without unnecessary
+  // switching losses). Can test higher frequencies later; AJP V8 will mask
+  // any audible artefacts anyway.
+  analogWriteFreq(1000);
   analogWriteRange(255);
-  // Configure PWM at 0 duty BEFORE flipping pinMode to OUTPUT so the very
-  // first edge is a known-zero, not a momentary half-second of high.
-  pinMode(pin::motor_dir, OUTPUT);
-  digitalWrite(pin::motor_dir, LOW);
-  pinMode(pin::motor_pwm, OUTPUT);
-  analogWrite(pin::motor_pwm, 0);      // PWM duty = 0%, throttle stays closed
 
-  pinMode(pin::motor_flt, INPUT_PULLUP);
+  // IBT-4 control inputs: configure both as OUTPUT with PWM = 0 (coast = safe).
+  pinMode(pin::motor_in1, OUTPUT);
+  analogWrite(pin::motor_in1, 0);
+  pinMode(pin::motor_in2, OUTPUT);
+  analogWrite(pin::motor_in2, 0);
+
   pinMode(pin::status_led, OUTPUT);
 
   armed = false;                       // start DISARMED — explicit
@@ -322,11 +372,8 @@ void loop() {
     digitalWrite(pin::status_led, fault_latched ? HIGH : !digitalRead(pin::status_led));
     tel.uptime_s = millis() / 1000;
   }
-
-  // Safety: check G2 /FAULT line every pass.
-  if (armed && digitalRead(pin::motor_flt) == LOW) {
-    latch_fault("runtime: G2 /FAULT asserted");
-  }
+  // (IBT-4 has no /FAULT output; runtime fault detection is now sensor-driven
+  //  only — the pedal cross-check inside control_step() is the main monitor.)
 }
 
 // Core 1: USB CDC protocol + telemetry stream.
@@ -452,27 +499,29 @@ static void handle_command(char* line) {
       return;
     }
     if (strcasecmp(name, "sweep") == 0) {
-      // Drive ETB through a slow open-close sweep so you can verify the linkage moves.
-      // Caller must be sure the engine isn't running before doing this.
+      // Drive ETB through a slow open-close sweep so you can verify the
+      // linkage moves. Caller must be sure the engine isn't running before
+      // doing this. IBT-4 dual-PWM: ramp IN1 up to open, back to zero, then
+      // IN2 up to close, back to zero.
       if (fault_latched) { emit("ERR fault latched"); return; }
       armed = true;
-      digitalWrite(pin::motor_slp, HIGH);
+      // Open ramp
       for (int duty = 0; duty <= 180; duty += 10) {
-        digitalWrite(pin::motor_dir, HIGH);
-        analogWrite(pin::motor_pwm, duty);
+        analogWrite(pin::motor_in1, duty);
+        analogWrite(pin::motor_in2, 0);
         delay(80);
         watchdog_update();
       }
-      analogWrite(pin::motor_pwm, 0);
+      analogWrite(pin::motor_in1, 0);
       delay(300);
+      // Close ramp
       for (int duty = 0; duty <= 180; duty += 10) {
-        digitalWrite(pin::motor_dir, LOW);
-        analogWrite(pin::motor_pwm, duty);
+        analogWrite(pin::motor_in1, 0);
+        analogWrite(pin::motor_in2, duty);
         delay(80);
         watchdog_update();
       }
-      analogWrite(pin::motor_pwm, 0);
-      digitalWrite(pin::motor_slp, LOW);
+      analogWrite(pin::motor_in2, 0);
       armed = false;
       emit("OK swept");
       return;

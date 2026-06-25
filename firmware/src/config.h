@@ -8,18 +8,32 @@
 // Production phase: ADC3 moves to motor driver current sense; ETB pot 2 goes
 // to the LM393 only (Pico stops reading it directly).
 namespace pin {
-  // ADC inputs
+  // ADC inputs — GP26/GP27/GP28 are the three external ADC channels.
+  // GP29 / ADC3 is NOT broken out on a standard Pico (it's hardwired internally
+  // to VSYS voltage sensing), so we can't read ETB Pot 2 or motor current with
+  // just the Pico — would need an ADS1115 over I²C if redundant cross-check or
+  // current sense becomes essential.
   constexpr uint8_t pedal_s1   = 26;  // ADC0 — pedal sensor 1
   constexpr uint8_t pedal_s2   = 27;  // ADC1 — pedal sensor 2
   constexpr uint8_t etb_pot1   = 28;  // ADC2 — ETB position pot signal 1 (PID feedback)
-  constexpr uint8_t etb_pot2   = 29;  // ADC3 — ETB position pot signal 2 (bench cross-check)
-  constexpr uint8_t motor_cs   = 29;  // alias — same pin reused once the driver is wired
 
-  // Motor driver control (Pololu G2)
-  constexpr uint8_t motor_pwm  = 10;  // PWM, ~20 kHz
-  constexpr uint8_t motor_dir  = 11;  // direction
-  constexpr uint8_t motor_slp  = 12;  // open-drain override of /SLP (wired-OR with LM393)
-  constexpr uint8_t motor_flt  = 13;  // /FAULT from G2 (pulled high; LOW = fault)
+  // Motor driver control (IBT-4 H-bridge — dual-PWM protocol).
+  //
+  // Mark recommended the IBT-4 over the Pololu G2: 50 A continuous, optical
+  // isolation on the inputs (cleaner sensor readings in a noisy engine bay),
+  // 3.3 V to 12 V logic compatible, MC34063 onboard regulator. Trade-offs vs
+  // the G2: no /SLP enable pin (use both-IN-low for coast), no /FAULT output,
+  // no current-sense pin.
+  //
+  // Protocol: IN1 PWM-driven → motor forward (open throttle).
+  //           IN2 PWM-driven → motor reverse (close throttle, helps PID
+  //                            settle past overshoot; spring is always present
+  //                            as the master mechanical default).
+  //           BOTH LOW       → coast → spring closes throttle. The safe state.
+  //           BOTH HIGH      → electrical brake (avoid, except for active
+  //                            stop scenarios).
+  constexpr uint8_t motor_in1  = 10;  // open-throttle PWM (was motor_pwm for G2)
+  constexpr uint8_t motor_in2  = 11;  // close-throttle PWM (was motor_dir for G2)
 
   // Status
   constexpr uint8_t status_led = 14;  // blinks at 1 Hz when healthy
@@ -72,8 +86,22 @@ struct SafetyCfg {
   float etb_closed_tol = 0.10f;  // ±10 % of recorded closed value
 
   // Motor current trip — sustained over-current trips the safety state.
+  // (Not currently used — IBT-4 has no current sense pin. Kept for forward
+  // compat with a future external shunt.)
   float motor_current_trip_a = 6.0f;
-  uint32_t motor_current_trip_ms = 200;  // must exceed trip current for this long
+  uint32_t motor_current_trip_ms = 200;
+
+  // Stuck-linkage detector — Mark's review 2026-06-22.
+  // If the firmware is commanding significant motor effort but the ETB
+  // position isn't responding (seized cable, motor failure, sensor stuck,
+  // broken linkage), latch a fault and let the spring close the throttle.
+  // The motor's electrical time constant is short and the throttle's
+  // mechanical inertia is small — under any duty > stuck_min_duty we
+  // expect at least stuck_min_movement of position change within
+  // stuck_timeout_ms.
+  float stuck_min_duty = 0.30f;        // only check when commanded duty > 30%
+  float stuck_min_movement = 0.05f;    // expect ≥ 5% ETB position change
+  uint32_t stuck_timeout_ms = 500;     // within this window
 };
 
 // --- Throttle map ---
@@ -103,11 +131,11 @@ struct Calibration {
   // Pedal sensor min/max raw ADC values (idle / WOT positions).
   uint16_t pedal_s1_min = 200, pedal_s1_max = 3900;
   uint16_t pedal_s2_min = 100, pedal_s2_max = 1950;
-  // ETB position pot at mechanical stops (signal 1 / signal 2).
+  // ETB position pot at mechanical stops (signal 1 only — pot signal 2 needs
+  // an ADS1115 to read, deferred). Pot 2 calibration kept here for forward
+  // compat with that future enhancement.
   uint16_t etb_pot1_closed = 250, etb_pot1_open = 3800;
-  uint16_t etb_pot2_closed = 3800, etb_pot2_open = 250;   // typically inverse of pot1
-  // Motor current sense scale (V at ADC per Amp through motor).
-  float motor_cs_v_per_a = 0.030f; // Pololu G2 typ.
+  uint16_t etb_pot2_closed = 3800, etb_pot2_open = 250;   // not currently used
 };
 
 struct Config {
