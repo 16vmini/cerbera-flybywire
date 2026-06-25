@@ -30,6 +30,26 @@ volatile bool armed = false;        // true => motor driver may be enabled
 volatile bool fault_latched = false;
 volatile char fault_reason[48] = "";
 
+// Why did the Pico last reboot? Captured once at the start of setup() —
+// useful for diagnostics when the chip resets unexpectedly. Mark's suggestion
+// 2026-06-22: WDT_RESET means the firmware hung and the watchdog rescued us;
+// GLITCH or BROWNOUT means an automotive power problem; SOFT_RESET means we
+// or PlatformIO triggered a reset (e.g. flash via 1200 bps).
+static const char* boot_reason_str = "unknown";
+
+static const char* describe_reset_reason() {
+  switch (rp2040.getResetReason()) {
+    case RP2040::PWRON_RESET:    return "power-on";
+    case RP2040::RUN_PIN_RESET:  return "external reset (RUN pin)";
+    case RP2040::SOFT_RESET:     return "software reset";
+    case RP2040::WDT_RESET:      return "WATCHDOG fired";
+    case RP2040::DEBUG_RESET:    return "debugger";
+    case RP2040::GLITCH_RESET:   return "power glitch";
+    case RP2040::BROWNOUT_RESET: return "brown-out";
+    default:                     return "unknown";
+  }
+}
+
 struct Telemetry {
   volatile float pedal_pct;    // 0–1.0 — pedal S1 after calibration
   volatile float pedal2_pct;   // 0–1.0 — pedal S2 after calibration
@@ -311,6 +331,10 @@ static bool save_config() {
 
 // ----- Setup / loops -----
 void setup() {
+  // Capture boot reason BEFORE anything else might disturb the register state.
+  // Just stores a pointer to a static string; cheap and side-effect-free.
+  boot_reason_str = describe_reset_reason();
+
   Serial.begin(115200);
 
   pinMode(pin::pedal_s1, INPUT);
@@ -343,6 +367,15 @@ void setup() {
 
   load_config();
   watchdog_enable(watchdog_ms, 1);     // hardware watchdog; resets chip on hang
+
+  // Announce boot reason on USB CDC so any logger / tuner watching the
+  // stream sees it. If a previous run ended with WATCHDOG fired, that's
+  // important info that should be visible immediately.
+  {
+    char buf[80];
+    snprintf(buf, sizeof(buf), "BOOT reason=%s", boot_reason_str);
+    Serial.println(buf);
+  }
 
   // No-op boot check — we deliberately don't call safe_to_arm() at setup
   // any more, because we don't want to latch a fault just because the
@@ -408,6 +441,10 @@ static void handle_command(char* line) {
 
   if (match(p, "PING")) { emit("PONG"); return; }
   if (match(p, "VERSION")) { emit("V flybywire 0.1"); return; }
+  if (match(p, "BOOT")) {
+    char buf[80]; snprintf(buf, sizeof(buf), "BOOT reason=%s", boot_reason_str);
+    emit(buf); return;
+  }
   if (match(p, "ARM")) {
     if (fault_latched) {
       char buf[120];
