@@ -118,6 +118,84 @@ the rest is just maths.
                                   └──────────────────┘
 ```
 
+## IBT-4 motor driver wiring (bench rig)
+
+Now that the motor driver is here (Mark recommended the IBT-4 — see
+`HARDWARE.md` for rationale), we wire it between the Pico's logic outputs
+and the ETB motor pair.
+
+**You will need:** a 12 V bench power supply or 12 V car battery (capable
+of ~5 A peak). The IBT-4 has its own onboard buck regulator that derives
+its 5 V logic supply from the 12 V input, so don't connect anything else
+to the IBT-4's 5 V.
+
+### IBT-4 board layout
+
+```
+            [ IN1 | IN2 | GND ]              ← 3-pin logic header
+                  IBT-4
+            [ +PWR | -PWR | MOTOR | MOTOR ]  ← 4-pin screw terminal
+```
+
+### Connections
+
+| From | Wire | To |
+|---|---|---|
+| **12 V bench PSU + (or battery +)** | thick (≥ 1 mm²) red | IBT-4 **+ PWR** screw terminal — via a 5–10 A inline fuse |
+| **12 V bench PSU − (or battery −)** | thick (≥ 1 mm²) black | IBT-4 **− PWR** screw terminal |
+| **Pico GP10** (pin 14 — left side, 14 down from top) | thin | IBT-4 **IN1** |
+| **Pico GP11** (pin 15 — left side, 15 down from top) | thin | IBT-4 **IN2** |
+| **Pico GND** (any) | thin | IBT-4 **GND** (the one on the 3-pin logic header) |
+| **IBT-4 MOTOR** (one of the two) | thick | **ETB pin 3** (thick black/white) — motor + |
+| **IBT-4 MOTOR** (the other) | thick | **ETB pin 5** (thick brown/white) — motor − |
+
+### Important
+
+- The two **MOTOR** terminals are interchangeable in theory (which one is
+  `+` and which is `−` only determines whether IN1 PWM means "open" or
+  "close" the throttle). We'll discover the polarity at first ARM —
+  if pressing the pedal **closes** the throttle instead of opening it,
+  swap the two motor wires at the IBT-4.
+- **Pico GND and IBT-4 GND must be tied together.** Without a common
+  ground, the IN1/IN2 logic signals have no defined reference. If you're
+  powering the Pico from USB and the IBT-4 from a separate 12 V supply,
+  the Pico GND → IBT-4 GND wire IS that tie.
+- **Don't bridge the +5 V** of the bench PSU (if it has one) to the Pico's
+  3V3. The IBT-4 makes its own logic supply internally; the Pico's already
+  powered by USB.
+
+### Bench-rig safety checklist before applying 12 V
+
+- [ ] Pedal connector seated firmly on the pedal
+- [ ] ETB butterfly free to move (nothing wedged in the throat)
+- [ ] ETB sitting on a non-conductive surface (no risk of motor leads
+      shorting to the housing or each other)
+- [ ] Inline fuse fitted on the 12 V positive feed (5 A is plenty)
+- [ ] Pico flashed with the latest firmware (IBT-4 protocol)
+- [ ] Tuner connected, **disarmed**, pedal-at-idle confirmed
+- [ ] You have a way to **disconnect 12 V instantly** (a clip-lead in
+      easy reach, or a finger on the bench-PSU OFF switch). If anything
+      runs away, pull power.
+
+### First ARM test sequence
+
+1. Tuner connected, all gauges reading correctly, **DISARMED**
+2. Apply 12 V to IBT-4 — power LED on the board lights
+3. Send **ARM** in the tuner — if all safe-to-arm conditions pass, status
+   pill goes "ARMED"
+4. Gently press the pedal — ETB butterfly should follow. Reading on the
+   ETB Pot 1 gauge should rise smoothly.
+5. Release the pedal — spring closes the throttle, ETB returns to closed
+   reading.
+
+### What "wrong polarity" looks like
+
+If pressing the pedal causes the firmware to try to open the throttle but
+the motor drives it *closed*, the stuck-linkage detector will trip within
+500 ms (commanding > 30 % duty but position not moving in the expected
+direction). Spring closes throttle, fault latched. Swap the two MOTOR
+wires at the IBT-4 screw terminal, CLEARFAULT, re-ARM.
+
 ## Before you power on
 
 - All four signal wires should read between 0 V and 3.3 V at the Pico ADC

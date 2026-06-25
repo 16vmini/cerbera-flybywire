@@ -242,6 +242,7 @@ async function connect() {
     log('connected');
     readLoop();
     await sleep(150);
+    await send('BOOT');                  // surface the boot reason in the log
     await send('STREAM ON');
     await reloadAllFromPico();
   } catch (e) { log('error: ' + e.message); }

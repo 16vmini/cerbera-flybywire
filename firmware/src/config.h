@@ -78,9 +78,13 @@ struct SafetyCfg {
   // the software check is a belt-and-braces backup.
   float pedal_xcheck_tol = 0.05f;
 
-  // Pedal must be in "idle window" at boot before arming.
-  float pedal_idle_min = 0.05f;  // 5 % of pedal range
-  float pedal_idle_max = 0.20f;  // 20 %
+  // Pedal must be in "idle window" before arming. Lower bound 0.00f means
+  // "anything from genuine rest up to lightly-touched". Upper bound 0.20f
+  // catches "pedal pressed at boot" which is the real safety case.
+  // (Was 0.05f historically; lowered after we found Mark's "cal-with-margin"
+  // approach conflicts with the simpler "rest = 0% on display" preference.)
+  float pedal_idle_min = 0.00f;
+  float pedal_idle_max = 0.20f;
 
   // ETB position at boot — must be near closed.
   float etb_closed_tol = 0.10f;  // ±10 % of recorded closed value
